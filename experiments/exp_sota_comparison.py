@@ -11,8 +11,9 @@ Baselines (evolvingfuzzysystems.eFS)
 
 Neuro-fuzzy evolving models (local code)
 ----------------------------------------
-- ENF_UnimNeuron_Safe (optional)
-- ENF_UnimNeuron_PA (optional)
+- ENF_UnimNeuron_Safe
+- ENF_UnimNeuron_Safe_Local
+- ENF_UnimNeuron_PA
 
 Datasets (river)
 ----------------
@@ -35,8 +36,8 @@ Protocol (reproducible, conference-friendly)
 3) Prequential evaluation
 4) Save:
    - Console summary lines ([RESULT])
-   - Per-dataset plots (accuracy and rule evolution)
-   - LaTeX tables (summary + statistical tests)
+   - Per-dataset plots (configured metric curves and rule evolution)
+   - LaTeX tables (configured metric summaries + statistical tests)
    - Optional: exported fuzzy rules (best-effort) for interpretability
 
 Anonymous submission note
@@ -45,7 +46,10 @@ This file contains NO author-identifying information by design (anonymous review
 
 How to run
 ----------
-python exp_sota_comparison.py
+python -m experiments.exp_sota_comparison
+
+Config file (relative to this script):
+configs/sota_config.yaml
 
 Output folder
 -------------
@@ -61,70 +65,145 @@ results/sota/
 
 from __future__ import annotations
 
+import importlib
 import os
 import time
-from typing import Dict, Any, Tuple, List
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 
-import numpy as np
-
-# Non-interactive backend (no Tkinter issues)
 import matplotlib
-
-matplotlib.use("Agg")
+matplotlib.use("Agg")  # Non-interactive plotting
 import matplotlib.pyplot as plt
-
-from tqdm.auto import tqdm
+import numpy as np
+import scikit_posthocs as sp
+import yaml
 from river import datasets
 from river.datasets import synth
 from scipy import stats
-import scikit_posthocs as sp 
+from tqdm.auto import tqdm
+
 
 # -------------------------------------------------------------------------
-# Your models (local files)
+# Configuration and explicit model import registry
 # -------------------------------------------------------------------------
-# Keep imports optional to avoid breaking the experiment suite.
+CONFIG_PATH = Path(__file__).resolve().parent / "configs" / "sota_config.yaml"
 
-try:
-    from src.baseline.evolving_nf_advanced import EvolvingNeuroFuzzyAdvanced  # optional
-    HAS_ENF_ADVANCED = True
-except Exception:
-    HAS_ENF_ADVANCED = False
+# Valid names, not a list of models to run. YAML determines which run.
+MODEL_REGISTRY = {
+    "ePL": ("evolvingfuzzysystems.eFS", "ePL"),
+    "ePL_plus": ("evolvingfuzzysystems.eFS", "ePL_plus"),
+    "exTS": ("evolvingfuzzysystems.eFS", "exTS"),
+    "Simpl_eTS": ("evolvingfuzzysystems.eFS", "Simpl_eTS"),
+    "eMG": ("evolvingfuzzysystems.eFS", "eMG"),
+    "ENF_Unim_Safe": ("src.baseline.ENF_UnimNeuron_Safe", "EvolvingNeuroFuzzyUnimSafe"),
+    "ENF_Unim_Safe_Local": (
+        "src.proposed.ENF_UnimNeuron_Safe_Local", "EvolvingNeuroFuzzyUnimSafeLocal"
+    ),
+    "ENF_Unim_PA": ("src.baseline.ENF_UnimNeuron_PA", "EvolvingNeuroFuzzyUnimPA"),
+}
 
-# from enfs_uni0_evolving import ENFSUni0Evolving  # optional, if you re-enable
+SUPPORTED_METRICS = ("accuracy", "macro-F1")
+METRIC_SUFFIX = {"accuracy": "acc", "macro-F1": "macro_f1"}
+METRIC_LABEL = {"accuracy": "Accuracy", "macro-F1": "Macro-F1"}
 
-# Optional: UnimNeuron-based variants (if present in repository)
-try:
-    from src.baseline.ENF_UnimNeuron_Safe import EvolvingNeuroFuzzyUnimSafe
-    HAS_UNIM_SAFE = True
-except Exception:
-    HAS_UNIM_SAFE = False
 
-try:
-    from src.proposed.ENF_UnimNeuron_Safe_Local import EvolvingNeuroFuzzyUnimSafeLocal
-    HAS_UNIM_SAFE_LOCAL = True
-except:
-    HAS_UNIM_SAFE_LOCAL = False
-    
-try:
-    from src.baseline.ENF_UnimNeuron_PA import EvolvingNeuroFuzzyUnimPA
-    HAS_UNIM_PA = True
-except Exception:
-    HAS_UNIM_PA = False
+def load_experiment_config(path: Path = CONFIG_PATH) -> Tuple[List[str], List[str]]:
+    if not path.is_file():
+        raise FileNotFoundError(f"SOTA configuration file not found: {path}")
+    with path.open("r", encoding="utf-8") as file:
+        config = yaml.safe_load(file)
+    if not isinstance(config, dict):
+        raise ValueError(f"Expected a YAML mapping in {path}")
 
-# Kaike's library
-from evolvingfuzzysystems.eFS import (
-    ePL,
-    ePL_plus,
-    exTS,
-    Simpl_eTS,
-    eMG,
-    ePL_KRLS_DISCO,
-)
+    def require_names(key: str, allowed) -> List[str]:
+        values = config.get(key)
+        if not isinstance(values, list) or not values or not all(isinstance(v, str) for v in values):
+            raise ValueError(f"{path}: {key!r} must be a non-empty list of names")
+        if len(set(values)) != len(values):
+            raise ValueError(f"{path}: duplicate entries in {key!r}: {values}")
+        unsupported = [name for name in values if name not in allowed]
+        if unsupported:
+            raise ValueError(
+                f"{path}: unknown entries in {key!r}: {unsupported}. "
+                f"Supported values: {list(allowed)}"
+            )
+        return values
 
-from dataclasses import dataclass
-from typing import Dict, Any, List, Optional, Tuple
-import numpy as np
-import os
+    return (
+        require_names("models_to_compare", MODEL_REGISTRY),
+        require_names("metrics", SUPPORTED_METRICS),
+    )
+
+
+def load_selected_model_classes(names: List[str]) -> Dict[str, Any]:
+    """Import selected models only. Never skip a requested model."""
+    classes = {}
+    for name in names:
+        module_name, class_name = MODEL_REGISTRY[name]
+        try:
+            module = importlib.import_module(module_name)
+            classes[name] = getattr(module, class_name)
+        except (ImportError, AttributeError) as exc:
+            raise ImportError(
+                f"Cannot import configured model {name!r}: expected "
+                f"{module_name}.{class_name}. Check the module and class name "
+                f"and install the required dependencies."
+            ) from exc
+    return classes
+
+
+# -------------------------------------------------------------------------
+# Online cumulative metrics (one test prediction before each training update)
+# -------------------------------------------------------------------------
+def compute_metric_histories(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    metrics: List[str],
+    n_classes: int,
+    evaluated_start: int = 0,
+) -> Dict[str, np.ndarray]:
+    """Cumulative prequential scores. Unscored eFS warm-up entries remain NaN.
+
+    Macro-F1 is the unweighted mean across all C known classes, with zero
+    for classes having no true positives (zero-division = 0).
+    """
+    n = len(y_true)
+    if len(y_pred) != n or not (0 <= evaluated_start < n):
+        raise ValueError("Invalid prediction lengths or evaluated_start")
+
+    histories = {name: np.full(n, np.nan, dtype=float) for name in metrics}
+    tp = np.zeros(n_classes, dtype=np.int64)
+    fp = np.zeros(n_classes, dtype=np.int64)
+    fn = np.zeros(n_classes, dtype=np.int64)
+    correct = 0
+    seen = 0
+
+    for t in range(evaluated_start, n):
+        yt, yh = int(y_true[t]), int(y_pred[t])
+        if not (0 <= yt < n_classes and 0 <= yh < n_classes):
+            raise ValueError(f"Invalid predicted/actual class at t={t}: {yh}, {yt}")
+        seen += 1
+        if yt == yh:
+            correct += 1
+            tp[yt] += 1
+        else:
+            fp[yh] += 1
+            fn[yt] += 1
+
+        if "accuracy" in histories:
+            histories["accuracy"][t] = correct / seen
+        if "macro-F1" in histories:
+            denominators = 2 * tp + fp + fn
+            scores = np.divide(
+                2 * tp,
+                denominators,
+                out=np.zeros(n_classes, dtype=float),
+                where=denominators != 0,
+            )
+            histories["macro-F1"][t] = float(np.mean(scores))
+
+    return histories
 
 
 def _latex_escape(s: str) -> str:
@@ -567,6 +646,7 @@ def prequential_nf_generic(model, X, y, desc="NF") -> Dict[str, Any]:
     return dict(
         accuracy=acc,
         y_pred=y_pred,
+        evaluated_start=0,
         n_rules_time=rules_arr,
         n_rules_final=n_rules_final,
         pred_fallbacks=int(pred_fallbacks),
@@ -586,6 +666,17 @@ def prequential_efs(model, X, y, warmup=200, batch_evolve=20, desc="eFS"):
     correct = np.zeros(n, float)
     acc = np.zeros(n, float)
 
+    # These eFS models output continuous regression values, not class IDs.
+    # The configured benchmark uses integer-encoded binary class labels (0/1).
+    # A 0.5 decision boundary converts the continuous output to that label set.
+    # Multiclass classification requires a separate, explicitly defined adapter.
+    n_classes = len(np.unique(y))
+    if n_classes != 2:
+        raise ValueError(
+            f"eFS regression-to-class conversion supports binary streams only; "
+            f"found {n_classes} classes in {desc}."
+        )
+
     if warmup >= n:
         warmup = max(1, n // 10)
 
@@ -601,14 +692,13 @@ def prequential_efs(model, X, y, warmup=200, batch_evolve=20, desc="eFS"):
         yhat_raw = model.predict(x_t)
         yhat_raw = np.asarray(yhat_raw).ravel()
 
-        if yhat_raw.size == 0:
-            yh = 0
-        else:
-            # Binary-friendly fallback:
-            if 0.0 <= yhat_raw[0] <= 1.0:
-                yh = int(yhat_raw[0] >= 0.5)
-            else:
-                yh = int(yhat_raw[0])
+        # Convert eFS continuous regression output to a binary class.
+        # Do not cast to int: e.g., int(2.3) == 2 is an invalid class label.
+        if yhat_raw.size != 1 or not np.isfinite(yhat_raw[0]):
+            raise ValueError(
+                f"Invalid eFS prediction at t={t}: {yhat_raw!r} ({desc})"
+            )
+        yh = int(float(yhat_raw[0]) >= 0.5)
 
         y_pred[t] = yh
         correct[t] = 1.0 if yh == yt else 0.0
@@ -640,6 +730,7 @@ def prequential_efs(model, X, y, warmup=200, batch_evolve=20, desc="eFS"):
     return dict(
         accuracy=acc,
         y_pred=y_pred,
+        evaluated_start=warmup,
         n_rules_time=rules_time,
         n_rules_final=n_rules_final,
         pred_fallbacks=pred_fallbacks,
@@ -669,36 +760,32 @@ def _draw_drift_markers(ax, dataset_name: str):
             ax.axvspan(left, right, color="red", alpha=0.08, linewidth=0)
 
 
-def plot_all_models_accuracy(dataset_name, model_results, outdir):
-    """One figure per dataset: prequential accuracy curves for all models."""
+def plot_all_models_metric(dataset_name, model_results, outdir, metric_name: str):
+    """Cumulative prequential curve for one selected metric."""
     os.makedirs(outdir, exist_ok=True)
     fig, ax = plt.subplots(figsize=(3.5, 2.6))
 
     for model_name, res in model_results.items():
-        acc = res["accuracy"]
-        t = np.arange(len(acc))
-        ax.plot(t, acc, label=model_name, linewidth=PLOT_LINEWIDTH)
+        values = res["metric_histories"][metric_name]
+        steps = np.arange(len(values))
+        ax.plot(steps, values, label=model_name, linewidth=PLOT_LINEWIDTH)
 
     _draw_drift_markers(ax, dataset_name)
-
     ax.set_xlabel("Time step", fontsize=9)
-    ax.set_ylabel("Prequential accuracy", fontsize=9)
+    ax.set_ylabel("Cumulative prequential " + METRIC_LABEL[metric_name], fontsize=9)
     ax.set_title(dataset_name, fontsize=9)
+    ax.set_ylim(-0.025, 1.025)
     ax.grid(alpha=PLOT_GRID_ALPHA)
-
     ax.legend(
-        fontsize=7,
-        loc="lower right",
-        ncol=2,
-        frameon=True,
-        framealpha=0.90,
-        borderpad=0.2,
+        fontsize=7, loc="lower right", ncol=2,
+        frameon=True, framealpha=0.90, borderpad=0.2,
         handlelength=1.6,
     )
-
     fig.tight_layout()
+    suffix = METRIC_SUFFIX[metric_name]
     fig.savefig(
-        os.path.join(outdir, f"{dataset_name}_acc_all_models.png"), dpi=PLOT_DPI
+        os.path.join(outdir, f"{dataset_name}_{suffix}_all_models.png"),
+        dpi=PLOT_DPI,
     )
     plt.close(fig)
 
@@ -748,40 +835,48 @@ def plot_all_models_rules(dataset_name, model_results, outdir):
 # -------------------------------------------------------------------------
 # LaTeX: summary table
 # -------------------------------------------------------------------------
-def build_latex_table(summary, outpath: str):
-    lines = []
-    lines.append(r"\begin{table}[t]")
-    lines.append(r"\centering")
-    lines.append(r"\small")
-    lines.append(
-        r"\caption{Prequential accuracy, rule growth and stability indicators on real and synthetic data streams.}"
-    )
-    lines.append(r"\begin{tabular}{llllcccccc} \toprule")
-    lines.append(
-        r"Mode & Dataset & Model & $N$ & Acc$_{final}$ & Acc$_{mean}$ & "
-        r"$N_{\text{rules}}^{final}$ & Time [s] & Fallbacks & Instabilities \\ \midrule"
-    )
-
-    for mode, dataset_name, model_name in sorted(summary.keys()):
-        s = summary[(mode, dataset_name, model_name)]
-        lines.append(
-            f"{mode} & {dataset_name} & {model_name} & "
-            f"{int(s['N'])} & {s['acc_final']:.3f} & {s['acc_mean']:.3f} & "
-            f"{int(s['n_rules_final'])} & {s['time_s']:.1f} & "
-            f"{int(s['pred_fallbacks'])} & {int(s['P_instabilities'])} \\\\"
+def build_latex_table(summary, outpath: str, metrics: List[str]):
+    """Create columns only for the configured metrics."""
+    metric_columns = []
+    for metric_name in metrics:
+        suffix = METRIC_SUFFIX[metric_name]
+        label = METRIC_LABEL[metric_name]
+        metric_columns.extend(
+            [(f"{label}$_{{final}}$", f"{suffix}_final"),
+             (f"{label}$_{{mean}}$", f"{suffix}_mean")]
         )
 
-    lines.append(r"\bottomrule")
-    lines.append(r"\end{tabular}")
-    lines.append(r"\end{table}")
+    header_labels = ["Mode", "Dataset", "Model", "$N$"]
+    header_labels += [name for name, _ in metric_columns]
+    header_labels += ["$N_{\\mathrm{rules}}^{final}$", "Time [s]", "Fallbacks", "Instabilities"]
+    colspec = "l" * 3 + "c" * (len(header_labels) - 3)
+    lines = [
+        r"\begin{table}[t]",
+        r"\centering",
+        r"\small",
+        r"\caption{Prequential metrics and rule growth on real and synthetic data streams.}",
+        rf"\begin{{tabular}}{{{colspec}}} \toprule",
+        " & ".join(header_labels) + r" \\ \midrule",
+    ]
 
-    with open(outpath, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines))
+    for mode, dataset_name, model_name in sorted(summary.keys()):
+        row = summary[(mode, dataset_name, model_name)]
+        entries = [
+            _latex_escape(mode), _latex_escape(dataset_name),
+            _latex_escape(model_name), str(int(row["N"])),
+        ]
+        entries += [f"{row[key]:.3f}" for _, key in metric_columns]
+        entries += [
+            str(int(row["n_rules_final"])), f"{row['time_s']:.1f}",
+            str(int(row["pred_fallbacks"])), str(int(row["P_instabilities"])),
+        ]
+        lines.append(" & ".join(entries) + r" \\")
+
+    lines += [r"\bottomrule", r"\end{tabular}", r"\end{table}"]
+    with open(outpath, "w", encoding="utf-8") as file:
+        file.write("\n".join(lines))
 
 
-# -------------------------------------------------------------------------
-# LaTeX: statistical tests (Friedman + posthoc, best-effort)
-# -------------------------------------------------------------------------
 def _latex_escape(s: str) -> str:
     return (
         s.replace("_", r"\_")
@@ -794,23 +889,18 @@ def _latex_escape(s: str) -> str:
 
 
 def build_stats_tables(
-    acc_mean_matrix: np.ndarray,
+    metric_mean_matrix: np.ndarray,
     model_names: List[str],
     outdir: str,
+    metric_name: str,
 ):
     os.makedirs(outdir, exist_ok=True)
 
-    friedman_path = os.path.join(outdir, "exp_stats_friedman.tex")
-    posthoc_path = os.path.join(outdir, "exp_stats_posthoc.tex")
+    suffix = "" if metric_name == "accuracy" else "_" + METRIC_SUFFIX[metric_name]
+    friedman_path = os.path.join(outdir, f"exp_stats{suffix}_friedman.tex")
+    posthoc_path = os.path.join(outdir, f"exp_stats{suffix}_posthoc.tex")
 
-    # if not HAS_SCIPY:
-    #     with open(friedman_path, "w", encoding="utf-8") as f:
-    #         f.write("% SciPy not available: Friedman test was not computed.\n")
-    #     with open(posthoc_path, "w", encoding="utf-8") as f:
-    #         f.write("% scikit-posthocs/SciPy not available: Post-hoc not computed.\n")
-    #     return
-
-    cols = [acc_mean_matrix[:, j] for j in range(acc_mean_matrix.shape[1])]
+    cols = [metric_mean_matrix[:, j] for j in range(metric_mean_matrix.shape[1])]
     stat, p = stats.friedmanchisquare(*cols)
 
     lines = []
@@ -818,7 +908,7 @@ def build_stats_tables(
     lines.append(r"\centering")
     lines.append(r"\small")
     lines.append(
-        r"\caption{Global statistical comparison via Friedman test (Acc$_{mean}$).}"
+        rf"\caption{{Global statistical comparison via Friedman test ({METRIC_LABEL[metric_name]} mean).}}"
     )
     lines.append(r"\begin{tabular}{lc} \toprule")
     lines.append(r"Statistic & $p$-value \\ \midrule")
@@ -830,18 +920,13 @@ def build_stats_tables(
     with open(friedman_path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
 
-    # if not HAS_SCPH:
-    #     with open(posthoc_path, "w", encoding="utf-8") as f:
-    #         f.write("% scikit-posthocs not available: Nemenyi post-hoc not computed.\n")
-    #     return
-
-    nemenyi = sp.posthoc_nemenyi_friedman(acc_mean_matrix)
+    nemenyi = sp.posthoc_nemenyi_friedman(metric_mean_matrix)
 
     lines = []
     lines.append(r"\begin{table}[t]")
     lines.append(r"\centering")
     lines.append(r"\small")
-    lines.append(r"\caption{Post-hoc Nemenyi test p-values (pairwise).}")
+    lines.append(rf"\caption{{Post-hoc Nemenyi p-values for {METRIC_LABEL[metric_name]} (pairwise).}}")
     colspec = "l" + "c" * len(model_names)
     lines.append(rf"\begin{{tabular}}{{{colspec}}} \toprule")
     header = (
@@ -1161,55 +1246,34 @@ def export_rules_latex(
 # Main experiment
 # -------------------------------------------------------------------------
 def main():
+    models_to_compare, metrics_to_use = load_experiment_config()
+    model_classes = load_selected_model_classes(models_to_compare)
+    print(f"Using config: {CONFIG_PATH}")
+    print(f"Selected models: {models_to_compare}")
+    print(f"Selected metrics: {metrics_to_use}")
+
     summary: Dict[tuple, Dict[str, Any]] = {}
-
-    MODELS: List[str] = [
-        "ePL",
-        "ePL_plus",
-        "exTS",
-        "Simpl_eTS",
-        "eMG",
-    ]
-    if HAS_UNIM_SAFE: MODELS.append("ENF_Unim_Safe")
-    if HAS_UNIM_SAFE_LOCAL: MODELS.append("ENF_Unim_Safe_Local")
-    if HAS_UNIM_PA: MODELS.append("ENF_Unim_PA")
-
-    # stats matrix: rows=datasets, cols=models (only when complete row exists)
-    acc_means_for_stats: List[List[float]] = []
-    model_names_for_stats = MODELS[:]  # fixed order
+    metric_means_for_stats: Dict[str, List[List[float]]] = {
+        name: [] for name in metrics_to_use
+    }
 
     for ds_name, ds in DATASETS_ALL.items():
         print(f"\n=== DATASET: {ds_name} ===")
         n_max = get_n_max_for_dataset(ds_name, EXPERIMENT_MODE)
-
         X_raw, y, feature_names = load_stream_to_numpy(ds, n_max=n_max)
         n_samples, n_features = X_raw.shape
         n_classes = len(np.unique(y))
-
         X, _, _ = min_max_scale(X_raw)
-
         outdir_ds = os.path.join(BASE_OUTDIR, ds_name)
         os.makedirs(outdir_ds, exist_ok=True)
-
         results_for_ds: Dict[str, Dict[str, Any]] = {}
 
-        for model_name in MODELS:
+        for model_name in models_to_compare:
             print(f"  -> Model: {model_name}")
+            model_cls = model_classes[model_name]
 
-            if model_name == "ENF_Unim_Safe":
-                model = EvolvingNeuroFuzzyUnimSafe(
-                    n_features=n_features,
-                    n_classes=n_classes,
-                    max_rules=5,
-                    safe_threshold=0.07,
-                    min_firing_for_update=0.05,
-                    tau_merge=0.62,
-                    drift_sensitivity=0.35,
-                )
-                eval_fn = prequential_nf_generic
-
-            elif model_name == "ENF_Unim_Safe_Local":
-                model = EvolvingNeuroFuzzyUnimSafeLocal(
+            if model_name in ("ENF_Unim_Safe", "ENF_Unim_Safe_Local"):
+                model = model_cls(
                     n_features=n_features,
                     n_classes=n_classes,
                     max_rules=5,
@@ -1221,7 +1285,7 @@ def main():
                 eval_fn = prequential_nf_generic
 
             elif model_name == "ENF_Unim_PA":
-                model = EvolvingNeuroFuzzyUnimPA(
+                model = model_cls(
                     n_features=n_features,
                     n_classes=n_classes,
                     max_rules=5,
@@ -1233,119 +1297,102 @@ def main():
                 )
                 eval_fn = prequential_nf_generic
 
-            elif model_name == "ePL":
-                model = ePL()
-                eval_fn = lambda m, X_, y_, desc: prequential_efs(
-                    m, X_, y_, warmup=WARMUP, batch_evolve=BATCH_EVOLVE, desc=desc
+            elif model_name in ("ePL", "ePL_plus", "exTS", "Simpl_eTS", "eMG"):
+                ef_model = model_cls()
+                model = ef_model if model_name == "ePL" else SafeEFSWrapper(
+                    ef_model, name=model_name
                 )
-
-            elif model_name == "ePL_plus":
-                model = SafeEFSWrapper(ePL_plus(), name="ePL_plus")
                 eval_fn = lambda m, X_, y_, desc: prequential_efs(
-                    m, X_, y_, warmup=WARMUP, batch_evolve=BATCH_EVOLVE, desc=desc
+                    m, X_, y_, warmup=WARMUP,
+                    batch_evolve=BATCH_EVOLVE, desc=desc,
                 )
-
-            elif model_name == "exTS":
-                model = SafeEFSWrapper(exTS(), name="exTS")
-                eval_fn = lambda m, X_, y_, desc: prequential_efs(
-                    m, X_, y_, warmup=WARMUP, batch_evolve=BATCH_EVOLVE, desc=desc
-                )
-
-            elif model_name == "Simpl_eTS":
-                model = SafeEFSWrapper(Simpl_eTS(), name="Simpl_eTS")
-                eval_fn = lambda m, X_, y_, desc: prequential_efs(
-                    m, X_, y_, warmup=WARMUP, batch_evolve=BATCH_EVOLVE, desc=desc
-                )
-
-            elif model_name == "eMG":
-                model = SafeEFSWrapper(eMG(), name="eMG")
-                eval_fn = lambda m, X_, y_, desc: prequential_efs(
-                    m, X_, y_, warmup=WARMUP, batch_evolve=BATCH_EVOLVE, desc=desc
-                )
-
             else:
-                print(f"    [WARN] Model {model_name} not available, skipping.")
-                continue
+                # This should be unreachable due to configuration validation.
+                raise ValueError(f"No constructor defined for model {model_name!r}")
 
-            t0 = time.time()
+            t0 = time.perf_counter()
             res = eval_fn(
                 model, X, y, desc=f"{model_name} ({ds_name}, mode={EXPERIMENT_MODE})"
             )
-            exec_time = time.time() - t0
+            exec_time = time.perf_counter() - t0
 
-            acc = res["accuracy"]
-            n_rules_final = res.get("n_rules_final", -1)
-            pred_fallbacks = res.get("pred_fallbacks", 0)
-            P_instabilities = res.get("P_instabilities", 0)
-
-            final_acc = float(acc[-1])
-            mean_acc = float(acc.mean())
-
+            # Evaluate only pre-training test predictions; the first WARMUP
+            # examples of eFS models were used for training, not prediction.
+            res["metric_histories"] = compute_metric_histories(
+                y_true=y, y_pred=res["y_pred"], metrics=metrics_to_use,
+                n_classes=n_classes, evaluated_start=res["evaluated_start"],
+            )
             res["time_s"] = exec_time
             res["N"] = n_samples
             results_for_ds[model_name] = res
 
-            summary[(EXPERIMENT_MODE, ds_name, model_name)] = dict(
-                acc_final=final_acc,
-                acc_mean=mean_acc,
-                n_rules_final=float(n_rules_final),
+            row = dict(
+                n_rules_final=int(res["n_rules_final"]),
                 time_s=float(exec_time),
-                pred_fallbacks=int(pred_fallbacks),
-                P_instabilities=int(P_instabilities),
+                pred_fallbacks=int(res["pred_fallbacks"]),
+                P_instabilities=int(res["P_instabilities"]),
                 N=int(n_samples),
             )
+            report_metrics = []
+            for name in metrics_to_use:
+                values = res["metric_histories"][name]
+                suffix = METRIC_SUFFIX[name]
+                row[f"{suffix}_final"] = float(values[-1])
+                row[f"{suffix}_mean"] = float(np.nanmean(values))
+                report_metrics.append(
+                    f"{METRIC_LABEL[name]}_final={values[-1]:.4f} | "
+                    f"{METRIC_LABEL[name]}_mean={np.nanmean(values):.4f}"
+                )
 
+            summary[(EXPERIMENT_MODE, ds_name, model_name)] = row
             print(
                 f"[RESULT] mode={EXPERIMENT_MODE:8s} | dataset={ds_name:18s} | "
-                f"model={model_name:15s} | N={n_samples:5d} | "
-                f"Acc_final={final_acc:.4f} | Acc_mean={mean_acc:.4f} | "
-                f"Rules_final={n_rules_final} | Time={exec_time:.1f}s | "
-                f"Pred_fallbacks={pred_fallbacks} | P_instabilities={P_instabilities}"
+                f"model={model_name:20s} | N={n_samples:5d} | "
+                + " | ".join(report_metrics)
+                + f" | Rules_final={res['n_rules_final']} | Time={exec_time:.1f}s | "
+                + f"Pred_fallbacks={res['pred_fallbacks']} | "
+                + f"P_instabilities={res['P_instabilities']}"
             )
 
-            export_rules_latex(
-                model=model,
-                model_name=model_name,
-                dataset_outdir=outdir_ds,
-                feature_names=feature_names,
-                max_rules_to_write=5,
-                top_features_per_rule=6,
-                latex_env="enumerate",  # ou "align"
-            )
+            if model_name.startswith("ENF_Unim_"):
+                export_rules_latex(
+                    model=model,
+                    model_name=model_name,
+                    dataset_outdir=outdir_ds,
+                    feature_names=feature_names,
+                    max_rules_to_write=5,
+                    top_features_per_rule=6,
+                    latex_env="enumerate",
+                )
 
-
-        # plots (now with drift markers when available)
-        plot_all_models_accuracy(ds_name, results_for_ds, outdir_ds)
+        for metric_name in metrics_to_use:
+            plot_all_models_metric(ds_name, results_for_ds, outdir_ds, metric_name)
         plot_all_models_rules(ds_name, results_for_ds, outdir_ds)
 
-        # stats row only if all models exist for this dataset
-        row = []
-        ok = True
-        for m in model_names_for_stats:
-            if m not in results_for_ds:
-                ok = False
-                break
-            row.append(float(results_for_ds[m]["accuracy"].mean()))
-        if ok and len(row) >= 2:
-            acc_means_for_stats.append(row)
+        for metric_name in metrics_to_use:
+            metric_means_for_stats[metric_name].append([
+                float(np.nanmean(results_for_ds[model_name]["metric_histories"][metric_name]))
+                for model_name in models_to_compare
+            ])
 
     tex_path = os.path.join(BASE_OUTDIR, "exp_stream_summary.tex")
-    build_latex_table(summary, tex_path)
+    build_latex_table(summary, tex_path, metrics_to_use)
     print(f"\nLaTeX summary table saved to: {tex_path}")
 
-    # Stats
-    if len(acc_means_for_stats) >= 2 and len(model_names_for_stats) >= 2:
-        acc_mat = np.array(acc_means_for_stats, dtype=float)
-        build_stats_tables(
-            acc_mean_matrix=acc_mat,
-            model_names=model_names_for_stats,
-            outdir=BASE_OUTDIR,
-        )
-        print("LaTeX stats saved to:")
-        print(f"  - {os.path.join(BASE_OUTDIR, 'exp_stats_friedman.tex')}")
-        print(f"  - {os.path.join(BASE_OUTDIR, 'exp_stats_posthoc.tex')}")
+    if len(DATASETS_ALL) >= 2 and len(models_to_compare) >= 3:
+        for metric_name in metrics_to_use:
+            build_stats_tables(
+                metric_mean_matrix=np.asarray(metric_means_for_stats[metric_name], dtype=float),
+                model_names=models_to_compare,
+                outdir=BASE_OUTDIR,
+                metric_name=metric_name,
+            )
+            suffix = "" if metric_name == "accuracy" else "_" + METRIC_SUFFIX[metric_name]
+            print(f"Statistical tables for {metric_name}:")
+            print(f"  - {os.path.join(BASE_OUTDIR, f'exp_stats{suffix}_friedman.tex')}")
+            print(f"  - {os.path.join(BASE_OUTDIR, f'exp_stats{suffix}_posthoc.tex')}")
     else:
-        print("\n[WARN] Not enough complete rows to run Friedman/posthoc.")
+        print("Not enough models/datasets for Friedman and Nemenyi tests (need 3 models and 2 datasets).")
 
 
 if __name__ == "__main__":
