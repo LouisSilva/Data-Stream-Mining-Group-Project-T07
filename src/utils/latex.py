@@ -118,8 +118,8 @@ def build_stats_tables(
 ):
     os.makedirs(outdir, exist_ok=True)
 
-    friedman_path = os.path.join(outdir, f"exp_stats{metric.suffix}_friedman.tex")
-    posthoc_path = os.path.join(outdir, f"exp_stats{metric.suffix}_posthoc.tex")
+    friedman_path = os.path.join(outdir, f"exp_stats_{metric.suffix}_friedman.tex")
+    posthoc_path = os.path.join(outdir, f"exp_stats_{metric.suffix}_posthoc.tex")
 
     cols = [metric_mean_matrix[:, j] for j in range(metric_mean_matrix.shape[1])]
     stat, p = stats.friedmanchisquare(*cols)

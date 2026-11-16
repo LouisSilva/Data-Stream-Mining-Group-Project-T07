@@ -122,12 +122,13 @@ experiments:
 
   ablation:
     models: [ENF_Unim_Safe, ENF_Unim_PA, ENF_Unim_Safe_Local]
-    datasets: [Elec2_real, Phishing_real, CreditCard_real, Bananas_real, ImageSegments_real, ConceptDrift_Agrawal, RandomRBFDrift_synth, Sine_synth]
+    datasets: [Elec2_real, Bananas_real, ConceptDrift_Agrawal, Sine_synth]
     ablations: [FULL, FIXED_AND, FIXED_OR, FIXED_COMP, NO_W]
     metrics: [Accuracy, Macro-F1]
 
 
 plotting:
-  overleaf_text_width_pt: 463.7796
+  overleaf_text_width_pt: 516
   overleaf_font_size: 11
+  default_dpi: 300
   colours:

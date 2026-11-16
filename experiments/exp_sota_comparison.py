@@ -40,27 +40,20 @@ Protocol (reproducible, conference-friendly)
    - LaTeX tables (configured metric summaries + statistical tests)
    - Optional: exported fuzzy rules (best-effort) for interpretability
 
-Anonymous submission note
--------------------------
-This file contains NO author-identifying information by design (anonymous review).
-
-How to run
-----------
-python -m experiments.exp_sota_comparison
-
-Config file (relative to this script):
-configs/sota_config.yaml
-
-Output folder
+Outputs
 -------------
 results/sota/
   <dataset_name>/
-     <dataset>_acc_all_models.png
+     <dataset>_<metric>_all_models.png
      <dataset>_rules_all_models.png
      rules_<model>.txt          (optional, when export is available)
   exp_stream_summary.tex
   exp_stats_friedman.tex
   exp_stats_posthoc.tex        (if posthoc available)
+  
+How to run
+----------
+python -m experiments.exp_sota_comparison
 """
 
 from __future__ import annotations
@@ -244,9 +237,9 @@ def main():
                 )
 
         for metric in metrics_to_use:
-            plot_all_models_metric(ds_name, results_for_ds, outdir_ds, metric, DRIFT_MARKERS)
+            plot_all_models_metric(config["plotting"], ds_name, results_for_ds, outdir_ds, metric, DRIFT_MARKERS)
             
-        plot_all_models_rules(ds_name, results_for_ds, outdir_ds, DRIFT_MARKERS)
+        plot_all_models_rules(config["plotting"], ds_name, results_for_ds, outdir_ds, DRIFT_MARKERS)
 
         for metric in metrics_to_use:
             metric_means_for_stats[metric].append([
