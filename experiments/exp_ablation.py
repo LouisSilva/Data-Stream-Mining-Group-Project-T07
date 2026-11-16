@@ -53,6 +53,11 @@ from tqdm.auto import tqdm
 from river import datasets
 from river.datasets import synth
 
+from src.utils.datasets import load_stream_to_numpy, min_max_scale
+from src.utils.latex import build_ablation_latex_table
+from src.utils.plotting import plot_ablation_accuracy
+
+
 # ---------------------------------------------------------------------
 # Optional: your UnimNeuron-based models (local files in same folder)
 # ---------------------------------------------------------------------
@@ -170,52 +175,6 @@ def safe_instantiate_real_datasets() -> Dict[str, Any]:
 DATASETS_ALL: Dict[str, Any] = {}
 DATASETS_ALL.update(safe_instantiate_real_datasets())
 DATASETS_ALL.update(SYNTH_DATASETS)
-
-
-# ---------------------------------------------------------------------
-# Stream loader (numeric only)
-# ---------------------------------------------------------------------
-def load_stream_to_numpy(ds, n_max: int) -> Tuple[np.ndarray, np.ndarray, List[str]]:
-    """Convert a river dataset/stream into NumPy arrays (X, y_int)."""
-    X_list: List[np.ndarray] = []
-    y_raw_list: List[Any] = []
-
-    it = ds.__iter__() if hasattr(ds, "__iter__") else iter(ds)
-
-    try:
-        x0, y0 = next(it)
-    except StopIteration:
-        raise RuntimeError("Empty stream/dataset")
-
-    feature_names = list(x0.keys())
-
-    def vec(x: dict) -> np.ndarray:
-        return np.array([x[f] for f in feature_names], dtype=float)
-
-    X_list.append(vec(x0))
-    y_raw_list.append(y0)
-
-    for i, (x, y) in enumerate(it, start=1):
-        if i >= n_max:
-            break
-        X_list.append(vec(x))
-        y_raw_list.append(y)
-
-    X = np.vstack(X_list).astype(float)
-
-    unique_labels = list(dict.fromkeys(y_raw_list))
-    label_to_int = {lab: idx for idx, lab in enumerate(unique_labels)}
-    y_int = np.array([label_to_int[lab] for lab in y_raw_list], dtype=int)
-
-    return X, y_int, feature_names
-
-
-def min_max_scale(X: np.ndarray) -> np.ndarray:
-    x_min = X.min(axis=0)
-    x_max = X.max(axis=0)
-    denom = x_max - x_min
-    denom[denom == 0.0] = 1.0
-    return (X - x_min) / denom
 
 
 # ---------------------------------------------------------------------
@@ -353,94 +312,6 @@ def enforce_no_w(model: Any):
 
 
 # ---------------------------------------------------------------------
-# Plotting
-# ---------------------------------------------------------------------
-def _draw_drift_markers(ax, dataset_name: str):
-    info = DRIFT_MARKERS.get(dataset_name, None)
-    if not info:
-        return
-    points = info.get("points", [])
-    width = int(info.get("width", 0))
-    for p in points:
-        ax.axvline(p, color="red", linestyle="--", linewidth=1.0, alpha=0.70)
-        if width and width > 0:
-            ax.axvspan(
-                max(0, p - width // 2),
-                p + width // 2,
-                color="red",
-                alpha=0.08,
-                linewidth=0,
-            )
-
-
-def plot_ablation_accuracy(
-    dataset_name: str, curves: Dict[str, np.ndarray], outdir: str
-):
-    os.makedirs(outdir, exist_ok=True)
-
-    fig, ax = plt.subplots(figsize=(3.5, 3.2))
-
-    for label, acc in curves.items():
-        t = np.arange(len(acc))
-        ax.plot(t, acc, label=label, linewidth=PLOT_LINEWIDTH)
-
-    _draw_drift_markers(ax, dataset_name)
-
-    ax.set_xlabel("Time step", fontsize=9)
-    ax.set_ylabel("Prequential accuracy", fontsize=9)
-    ax.set_title(dataset_name, fontsize=9)
-    ax.grid(alpha=PLOT_GRID_ALPHA)
-
-    leg = ax.legend(
-        fontsize=7,
-        loc="upper center",
-        bbox_to_anchor=(0.5, -0.22),  # abaixo do eixo
-        ncol=2,
-        frameon=True,
-        framealpha=0.90,
-        borderpad=0.25,
-        handlelength=1.6,
-        columnspacing=1.2,
-    )
-
-    fig.subplots_adjust(bottom=0.32)
-
-    fig.savefig(os.path.join(outdir, f"{dataset_name}_acc_ablation.png"), dpi=PLOT_DPI)
-    plt.close(fig)
-
-
-# ---------------------------------------------------------------------
-# LaTeX table
-# ---------------------------------------------------------------------
-def build_latex_table(rows: List[Dict[str, Any]], outpath: str):
-    lines: List[str] = []
-    lines.append(r"\begin{table}[t]")
-    lines.append(r"\centering")
-    lines.append(r"\small")
-    lines.append(
-        r"\caption{Ablation study on UnimNeuron components (prequential evaluation).}"
-    )
-    lines.append(r"\begin{tabular}{llllccccc} \toprule")
-    lines.append(
-        r"Mode & Dataset & Model & Ablation & $N$ & Acc$_{final}$ & Acc$_{mean}$ & $N_{\mathrm{rules}}$ & Time [s] \\ \midrule"
-    )
-
-    for r in rows:
-        lines.append(
-            f"{r['mode']} & {r['dataset']} & {r['model']} & {r['ablation']} & "
-            f"{int(r['N'])} & {r['acc_final']:.3f} & {r['acc_mean']:.3f} & "
-            f"{int(r['n_rules_final'])} & {r['time_s']:.1f} \\\\"
-        )
-
-    lines.append(r"\bottomrule")
-    lines.append(r"\end{tabular}")
-    lines.append(r"\end{table}")
-
-    with open(outpath, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines))
-
-
-# ---------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------
 def main():
@@ -560,7 +431,7 @@ def main():
             plot_ablation_accuracy(ds_name, curves_for_plot, outdir_ds)
 
     tex_path = os.path.join(BASE_OUTDIR, "exp3_ablation_summary.tex")
-    build_latex_table(summary_rows, tex_path)
+    build_ablation_latex_table(summary_rows, tex_path)
     print(f"\nLaTeX ablation table saved to: {tex_path}")
     print("Figures saved under:", BASE_OUTDIR)
 
