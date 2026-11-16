@@ -49,7 +49,7 @@ from river import datasets
 from river.datasets import synth
 
 from src.utils.config import load_yaml_config
-from src.utils.datasets import load_stream_to_numpy, min_max_scale, safe_instantiate_real_datasets
+from src.utils.datasets import load_stream_to_numpy, min_max_scale, safe_instantiate_real_datasets, build_datasets
 from src.utils.metrics import compute_metric_histories, Metric, resolve_metrics_from_yaml_config
 from src.utils.latex import build_ablation_latex_table
 from src.utils.plotting import plot_ablation_metric
@@ -59,43 +59,7 @@ from src.utils.evaluation import _unim_regime_and_rho, RuleStats, SafeEFSWrapper
 # ---------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------
-
 CONFIG_PATH = Path(__file__).resolve().parent / "experiment_config.yaml"
-
-# ---------------------------------------------------------------------
-# Dataset selection
-# ---------------------------------------------------------------------
-
-REAL_DATASET_CANDIDATES = [
-    "Elec2",
-    "Phishing",
-    "CreditCard",
-    "Bananas",
-    "ImageSegments",
-]
-
-SYNTH_DATASETS = {
-    # Known drift point for marker
-    "ConceptDrift_Agrawal": synth.ConceptDriftStream(
-        stream=synth.Agrawal(seed=1),
-        drift_stream=synth.Agrawal(seed=2),
-        seed=42,
-        position=2500,
-        width=1000,
-    ),
-    # Additional synthetic streams (no single known drift marker)
-    "RandomRBFDrift_synth": synth.RandomRBFDrift(),
-    "Sine_synth": synth.Sine(seed=42),
-}
-
-DRIFT_MARKERS = {
-    "ConceptDrift_Agrawal": {"points": [2500], "width": 1000},
-}
-
-
-DATASETS_ALL: Dict[str, Any] = {}
-DATASETS_ALL.update(safe_instantiate_real_datasets(REAL_DATASET_CANDIDATES))
-DATASETS_ALL.update(SYNTH_DATASETS)
 
 
 # ---------------------------------------------------------------------
@@ -186,6 +150,8 @@ def main():
         for name, dataset_config in config["datasets"].items()
         if "drift_markers" in dataset_config
     }
+
+    datasets = build_datasets(config, ablation_config["datasets"])
     
     model_specs = []
     for name in ablation_config["models"]:
@@ -200,7 +166,7 @@ def main():
 
     summary_rows: List[Dict[str, Any]] = []
     for ds_name in ablation_config["datasets"]:
-        ds = DATASETS_ALL[ds_name]
+        ds = datasets[ds_name]
         print(f"\n=== DATASET: {ds_name} ===")
         n_max = config["datasets"][ds_name]["lengths"][ablation_config["experiment_mode"]]
 
@@ -217,7 +183,7 @@ def main():
         n_samples, n_features = X.shape
         n_classes = int(len(np.unique(y)))
 
-        outdir_ds = os.path.join(BASE_OUTDIR, ds_name)
+        outdir_ds = os.path.join(ablation_config["base_outdir"], ds_name)
         os.makedirs(outdir_ds, exist_ok=True)
 
         curves_for_plot: Dict[Metric, Dict[str, np.ndarray]] = {metric: {} for metric in metrics}
@@ -292,10 +258,10 @@ def main():
             if curves_for_plot[metric]:
                 plot_ablation_metric(config["plotting"], ds_name, curves_for_plot[metric], outdir_ds, metric, drift_markers)
 
-    tex_path = os.path.join(BASE_OUTDIR, "exp_ablation_summary.tex")
+    tex_path = os.path.join(ablation_config["base_outdir"], "exp_ablation_summary.tex")
     build_ablation_latex_table(summary_rows, tex_path, metrics)
     print(f"\nLaTeX ablation table saved to: {tex_path}")
-    print("Figures saved under:", BASE_OUTDIR)
+    print("Figures saved under:", ablation_config["base_outdir"])
 
 
 if __name__ == "__main__":

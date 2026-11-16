@@ -77,7 +77,7 @@ from scipy import stats
 from tqdm.auto import tqdm
 
 from src.utils.config import load_yaml_config
-from src.utils.datasets import load_stream_to_numpy, min_max_scale
+from src.utils.datasets import load_stream_to_numpy, min_max_scale, build_datasets
 from src.utils.metrics import compute_metric_histories, Metric, resolve_metrics_from_yaml_config
 from src.utils.latex import build_sota_latex_table, build_stats_tables, export_rules_best_effort, export_rules_latex
 from src.utils.plotting import plot_all_models_metric, plot_all_models_rules
@@ -87,34 +87,7 @@ from src.utils.evaluation import _unim_regime_and_rho, RuleStats, SafeEFSWrapper
 # -------------------------------------------------------------------------
 # Configuration
 # -------------------------------------------------------------------------
-
 CONFIG_PATH = Path(__file__).resolve().parent / "experiment_config.yaml"
-# -------------------------------------------------------------------------
-# Dataset definitions
-# -------------------------------------------------------------------------
-
-REAL_DATASETS = {
-    "Elec2_real": datasets.Elec2(),
-    "CreditCard_real": datasets.CreditCard(),
-    "Phishing_real": datasets.Phishing(),
-    "Bananas_real": datasets.Bananas(),  # classic 2D benchmark
-}
-
-SYNTH_DATASETS = {
-    "ConceptDrift_Agrawal": synth.ConceptDriftStream(
-        stream=synth.Agrawal(seed=1),
-        drift_stream=synth.Agrawal(seed=2),
-        seed=42,
-        position=2500,  # known drift point
-        width=1000,  # gradual drift window
-    ),
-    "Agrawal_synth": synth.Agrawal(seed=42),
-    "RandomRBFDrift_synth": synth.RandomRBFDrift(),
-    "Sine_synth": synth.Sine(seed=42),
-}
-
-DATASETS_ALL = {**REAL_DATASETS, **SYNTH_DATASETS}
-
 
 # -------------------------------------------------------------------------
 # Main experiment
@@ -129,7 +102,8 @@ def main():
         for name, dataset_config in config["datasets"].items()
         if "drift_markers" in dataset_config
     }
-    
+
+    datasets = build_datasets(config, sota_config["datasets"])
     models_to_compare = sota_config["models"]
     metrics_to_use = resolve_metrics_from_yaml_config(sota_config["metrics"])
 
@@ -148,7 +122,7 @@ def main():
     }
 
     for ds_name in sota_config["datasets"]:
-        ds = DATASETS_ALL[ds_name]
+        ds = datasets[ds_name]
         print(f"\n=== DATASET: {ds_name} ===")
         
         n_max = config["datasets"][ds_name]["lengths"][sota_config["experiment_mode"]]
@@ -168,10 +142,15 @@ def main():
             if spec["kind"] == "nf":
                 model = model_cls(n_features=n_features, n_classes=n_classes, **spec.get("parameters", {}))
                 eval_fn = prequential_nf_generic
+                
             elif spec["kind"] == "efs":
                 ef_model = model_cls(**spec.get("parameters", {}))
-                model = (SafeEFSWrapper(ef_model, name=model_name) if spec.get("safe_wrapper", model_name != "ePL") else ef_model)
+                model = (SafeEFSWrapper(ef_model, name=model_name) 
+                         if spec.get("safe_wrapper", model_name != "ePL") 
+                         else ef_model)
+                
                 eval_fn = lambda m, X_, y_, desc: prequential_efs(m, X_, y_, warmup=sota_config["warmup"], batch_evolve=sota_config["batch_evolve"], desc=desc)
+                
             else:
                 raise ValueError(f"Unsupported model kind: {spec['kind']}")
 
@@ -245,7 +224,7 @@ def main():
                 for model_name in models_to_compare
             ])
 
-    tex_path = os.path.join(BASE_OUTDIR, "exp_stream_summary.tex")
+    tex_path = os.path.join(sota_config["base_outdir"], "exp_stream_summary.tex")
     build_sota_latex_table(summary, tex_path, metrics_to_use)
     print(f"\nLaTeX summary table saved to: {tex_path}")
 
@@ -254,13 +233,13 @@ def main():
             build_stats_tables(
                 metric_mean_matrix=np.asarray(metric_means_for_stats[metric], dtype=float),
                 model_names=models_to_compare,
-                outdir=BASE_OUTDIR,
+                outdir=sota_config["base_outdir"],
                 metric=metric,
             )
             
             print(f"Statistical tables for {metric.label}:")
-            print(f"  - {os.path.join(BASE_OUTDIR, f'exp_stats{metric.suffix}_friedman.tex')}")
-            print(f"  - {os.path.join(BASE_OUTDIR, f'exp_stats{metric.suffix}_posthoc.tex')}")
+            print(f"  - {os.path.join(sota_config["base_outdir"], f'exp_stats{metric.suffix}_friedman.tex')}")
+            print(f"  - {os.path.join(sota_config["base_outdir"], f'exp_stats{metric.suffix}_posthoc.tex')}")
     else:
         print("Not enough models/datasets for Friedman and Nemenyi tests (need 3 models and 2 datasets).")
 

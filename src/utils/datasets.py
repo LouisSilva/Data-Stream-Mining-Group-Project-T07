@@ -77,3 +77,23 @@ def safe_instantiate_real_datasets(candidates: List[str]) -> Dict[str, Any]:
         out[key] = ds
     return out
 
+
+def build_datasets(config: dict, dataset_names: list[str]) -> dict:
+    def build_synth_dataset(dataset_config: dict):
+        params = dataset_config.get("params", {}).copy()
+
+        for key in ("stream", "drift_stream"):
+            if key in dataset_config:
+                params[key] = build_synth_dataset(dataset_config[key])
+
+        return getattr(datasets.synth, dataset_config["generator"])(**params)
+
+    result = {}
+    for name in dataset_names:
+        dataset_config = config["datasets"][name]
+
+        if dataset_config["type"] == "real": result[name] = getattr(datasets, dataset_config["class_name"])()
+        elif dataset_config["type"] == "synth": result[name] = build_synth_dataset(dataset_config)
+        else: raise ValueError(f"Unknown dataset type: {dataset_config['type']}")
+
+    return result
