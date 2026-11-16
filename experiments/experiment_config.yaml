@@ -119,12 +119,21 @@ experiments:
     models: [ENF_Unim_Safe, ENF_Unim_Safe_Local, ENF_Unim_PA]
     datasets: [Elec2_real, Bananas_real, ConceptDrift_Agrawal, Sine_synth]
     metrics: [Accuracy, Macro-F1]
+    experiment_mode: complete # Default is "complete" for final paper results.
+    base_outdir: results/sota
+    
+    # Warmup and batch sizes for Kaike eFS models
+    warmup: 200
+    batch_evolve: 20
+    
 
   ablation:
     models: [ENF_Unim_Safe, ENF_Unim_PA, ENF_Unim_Safe_Local]
     datasets: [Elec2_real, Bananas_real, ConceptDrift_Agrawal, Sine_synth]
     ablations: [FULL, FIXED_AND, FIXED_OR, FIXED_COMP, NO_W]
     metrics: [Accuracy, Macro-F1]
+    experiment_mode: complete
+    base_outdir: results/ablation
 
 
 plotting:

@@ -62,10 +62,6 @@ from src.utils.evaluation import _unim_regime_and_rho, RuleStats, SafeEFSWrapper
 
 CONFIG_PATH = Path(__file__).resolve().parent / "experiment_config.yaml"
 
-EXPERIMENT_MODE = "complete"
-BASE_OUTDIR = "results/ablation"
-os.makedirs(BASE_OUTDIR, exist_ok=True)
-
 # ---------------------------------------------------------------------
 # Dataset selection
 # ---------------------------------------------------------------------
@@ -183,8 +179,15 @@ def enforce_no_w(model: Any):
 def main():
     config = load_yaml_config(CONFIG_PATH)
     ablation_config = config["experiments"]["ablation"]
-    model_specs = []
+    os.makedirs(ablation_config["base_outdir"], exist_ok=True)
 
+    drift_markers = {
+        name: dataset_config["drift_markers"]
+        for name, dataset_config in config["datasets"].items()
+        if "drift_markers" in dataset_config
+    }
+    
+    model_specs = []
     for name in ablation_config["models"]:
         spec = config["models"][name]
         if spec["kind"] != "nf":
@@ -199,7 +202,7 @@ def main():
     for ds_name in ablation_config["datasets"]:
         ds = DATASETS_ALL[ds_name]
         print(f"\n=== DATASET: {ds_name} ===")
-        n_max = config["datasets"][ds_name]["lengths"][EXPERIMENT_MODE]
+        n_max = config["datasets"][ds_name]["lengths"][ablation_config["experiment_mode"]]
 
         try:
             X_raw, y, _ = load_stream_to_numpy(ds, n_max=n_max)
@@ -264,7 +267,7 @@ def main():
                 n_rules_final = len(getattr(model, "rules", []))
                 histories = compute_metric_histories(y, predictions, metrics, n_classes)
                 row = dict(
-                    mode=EXPERIMENT_MODE, 
+                    mode=ablation_config["experiment_mode"], 
                     dataset=ds_name,
                     model=model_name, 
                     ablation=ab.name, 
@@ -287,7 +290,7 @@ def main():
 
         for metric in metrics:
             if curves_for_plot[metric]:
-                plot_ablation_metric(config["plotting"], ds_name, curves_for_plot[metric], outdir_ds, metric, DRIFT_MARKERS)
+                plot_ablation_metric(config["plotting"], ds_name, curves_for_plot[metric], outdir_ds, metric, drift_markers)
 
     tex_path = os.path.join(BASE_OUTDIR, "exp_ablation_summary.tex")
     build_ablation_latex_table(summary_rows, tex_path, metrics)

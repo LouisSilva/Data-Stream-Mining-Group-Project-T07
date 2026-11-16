@@ -89,17 +89,6 @@ from src.utils.evaluation import _unim_regime_and_rho, RuleStats, SafeEFSWrapper
 # -------------------------------------------------------------------------
 
 CONFIG_PATH = Path(__file__).resolve().parent / "experiment_config.yaml"
-
-# Default is "complete" for final paper results.
-EXPERIMENT_MODE = "complete"
-
-BASE_OUTDIR = "results/sota"
-os.makedirs(BASE_OUTDIR, exist_ok=True)
-
-# Warmup and batch sizes for Kaike eFS models
-WARMUP = 200
-BATCH_EVOLVE = 20
-
 # -------------------------------------------------------------------------
 # Dataset definitions
 # -------------------------------------------------------------------------
@@ -126,12 +115,6 @@ SYNTH_DATASETS = {
 
 DATASETS_ALL = {**REAL_DATASETS, **SYNTH_DATASETS}
 
-DRIFT_MARKERS = {
-    "ConceptDrift_Agrawal": {"points": [2500], "width": 1000},
-    # Example of manual marker (only if you decide a point):
-    # "RandomRBFDrift_synth": {"points": [10000], "width": 0},
-}
-
 
 # -------------------------------------------------------------------------
 # Main experiment
@@ -139,6 +122,14 @@ DRIFT_MARKERS = {
 def main():
     config = load_yaml_config(CONFIG_PATH)
     sota_config = config["experiments"]["sota_comparison"]
+    os.makedirs(sota_config["base_outdir"], exist_ok=True)
+
+    drift_markers = {
+        name: dataset_config["drift_markers"]
+        for name, dataset_config in config["datasets"].items()
+        if "drift_markers" in dataset_config
+    }
+    
     models_to_compare = sota_config["models"]
     metrics_to_use = resolve_metrics_from_yaml_config(sota_config["metrics"])
 
@@ -160,12 +151,12 @@ def main():
         ds = DATASETS_ALL[ds_name]
         print(f"\n=== DATASET: {ds_name} ===")
         
-        n_max = config["datasets"][ds_name]["lengths"][EXPERIMENT_MODE]
+        n_max = config["datasets"][ds_name]["lengths"][sota_config["experiment_mode"]]
         X_raw, y, feature_names = load_stream_to_numpy(ds, n_max=n_max)
         n_samples, n_features = X_raw.shape
         n_classes = len(np.unique(y))
         X, _, _ = min_max_scale(X_raw)
-        outdir_ds = os.path.join(BASE_OUTDIR, ds_name)
+        outdir_ds = os.path.join(sota_config["base_outdir"], ds_name)
         os.makedirs(outdir_ds, exist_ok=True)
         results_for_ds: Dict[str, Dict[str, Any]] = {}
 
@@ -180,12 +171,12 @@ def main():
             elif spec["kind"] == "efs":
                 ef_model = model_cls(**spec.get("parameters", {}))
                 model = (SafeEFSWrapper(ef_model, name=model_name) if spec.get("safe_wrapper", model_name != "ePL") else ef_model)
-                eval_fn = lambda m, X_, y_, desc: prequential_efs(m, X_, y_, warmup=WARMUP, batch_evolve=BATCH_EVOLVE, desc=desc)
+                eval_fn = lambda m, X_, y_, desc: prequential_efs(m, X_, y_, warmup=sota_config["warmup"], batch_evolve=sota_config["batch_evolve"], desc=desc)
             else:
                 raise ValueError(f"Unsupported model kind: {spec['kind']}")
 
             t0 = time.perf_counter()
-            res = eval_fn(model, X, y, desc=f"{model_name} ({ds_name}, mode={EXPERIMENT_MODE})")
+            res = eval_fn(model, X, y, desc=f"{model_name} ({ds_name}, mode={sota_config["experiment_mode"]})")
             exec_time = time.perf_counter() - t0
 
             # Evaluate only pre-training test predictions; the first WARMUP examples of eFS models were used for training, not prediction.
@@ -215,9 +206,9 @@ def main():
                     f"{metric.label}_mean={np.nanmean(values):.4f}"
                 )
 
-            summary[(EXPERIMENT_MODE, ds_name, model_name)] = row
+            summary[(sota_config["experiment_mode"], ds_name, model_name)] = row
             print(
-                f"[RESULT] mode={EXPERIMENT_MODE:8s} | dataset={ds_name:18s} | "
+                f"[RESULT] mode={sota_config["experiment_mode"]:8s} | dataset={ds_name:18s} | "
                 f"model={model_name:20s} | N={n_samples:5d} | "
                 + " | ".join(report_metrics)
                 + f" | Rules_final={res['n_rules_final']} | Time={exec_time:.1f}s | "
@@ -237,9 +228,16 @@ def main():
                 )
 
         for metric in metrics_to_use:
-            plot_all_models_metric(config["plotting"], ds_name, results_for_ds, outdir_ds, metric, DRIFT_MARKERS)
+            plot_all_models_metric(
+                config["plotting"], 
+                ds_name, 
+                results_for_ds, 
+                outdir_ds,
+                metric, 
+                drift_markers
+            )
             
-        plot_all_models_rules(config["plotting"], ds_name, results_for_ds, outdir_ds, DRIFT_MARKERS)
+        plot_all_models_rules(config["plotting"], ds_name, results_for_ds, outdir_ds, drift_markers)
 
         for metric in metrics_to_use:
             metric_means_for_stats[metric].append([
