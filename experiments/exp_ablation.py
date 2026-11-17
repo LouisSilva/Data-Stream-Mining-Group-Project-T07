@@ -43,17 +43,13 @@ import numpy as np
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-
 from tqdm.auto import tqdm
-from river import datasets
-from river.datasets import synth
 
 from src.utils.config import load_yaml_config
-from src.utils.datasets import load_stream_to_numpy, min_max_scale, safe_instantiate_real_datasets, build_datasets
+from src.utils.datasets import load_stream_to_numpy, min_max_scale, build_datasets
 from src.utils.metrics import compute_metric_histories, Metric, resolve_metrics_from_yaml_config
 from src.utils.latex import build_ablation_latex_table
 from src.utils.plotting import plot_ablation_metric
-from src.utils.evaluation import _unim_regime_and_rho, RuleStats, SafeEFSWrapper, prequential_efs
 
 
 # ---------------------------------------------------------------------
@@ -152,22 +148,29 @@ def main():
     }
 
     datasets = build_datasets(config, ablation_config["datasets"])
+
+    models_to_compare = ablation_config["models"]
+    metrics_to_use = resolve_metrics_from_yaml_config(ablation_config["metrics"])
     
-    model_specs = []
-    for name in ablation_config["models"]:
-        spec = config["models"][name]
-        if spec["kind"] != "nf":
+    model_classes = {}
+    for name in models_to_compare:
+        if config["models"][name]["kind"] != "nf":
             raise ValueError(f"Ablation requires kind: nf, got {name}")
-        module_name, class_name = spec["import"].split(":", 1)
-        model_specs.append((name, getattr(importlib.import_module(module_name), class_name)))
+        
+        module_name, class_name = config["models"][name]["import"].split(":", 1)
+        model_classes[name] = getattr(importlib.import_module(module_name), class_name)
+
+    print(f"Using config: {CONFIG_PATH}")
+    print(f"Selected models: {models_to_compare}")
+    print(f"Selected metrics: {metrics_to_use}")
 
     ablations = [ab for ab in ABLATIONS if ab.name in ablation_config["ablations"]]
-    metrics = resolve_metrics_from_yaml_config(ablation_config["metrics"])
 
     summary_rows: List[Dict[str, Any]] = []
     for ds_name in ablation_config["datasets"]:
         ds = datasets[ds_name]
         print(f"\n=== DATASET: {ds_name} ===")
+
         n_max = config["datasets"][ds_name]["lengths"][ablation_config["experiment_mode"]]
 
         try:
@@ -186,9 +189,11 @@ def main():
         outdir_ds = os.path.join(ablation_config["base_outdir"], ds_name)
         os.makedirs(outdir_ds, exist_ok=True)
 
-        curves_for_plot: Dict[Metric, Dict[str, np.ndarray]] = {metric: {} for metric in metrics}
+        curves_for_plot: Dict[Metric, Dict[str, np.ndarray]] = {metric: {} for metric in metrics_to_use}
         
-        for model_name, model_cls in model_specs:
+        for model_name in model_classes:
+            model_cls = model_classes[model_name]
+            
             for ab in ABLATIONS:
                 label = f"{model_name}-{ab.name}"
                 print(f"  -> {label}")
@@ -231,7 +236,7 @@ def main():
                 module.unim_aggregate = original_aggregate
 
                 n_rules_final = len(getattr(model, "rules", []))
-                histories = compute_metric_histories(y, predictions, metrics, n_classes)
+                histories = compute_metric_histories(y, predictions, metrics_to_use, n_classes)
                 row = dict(
                     mode=ablation_config["experiment_mode"], 
                     dataset=ds_name,
@@ -244,7 +249,7 @@ def main():
 
                 
                 report = []
-                for metric in metrics:
+                for metric in metrics_to_use:
                     values = histories[metric]
                     row[f"{metric.suffix}_final"] = float(values[-1])
                     row[f"{metric.suffix}_mean"] = float(np.nanmean(values))
@@ -254,12 +259,12 @@ def main():
                 summary_rows.append(row)
                 print(f"     [RESULT] {' | '.join(report)} | Rules_final={n_rules_final} | Time={exec_time:.1f}s")
 
-        for metric in metrics:
+        for metric in metrics_to_use:
             if curves_for_plot[metric]:
                 plot_ablation_metric(config["plotting"], ds_name, curves_for_plot[metric], outdir_ds, metric, drift_markers)
 
     tex_path = os.path.join(ablation_config["base_outdir"], "exp_ablation_summary.tex")
-    build_ablation_latex_table(summary_rows, tex_path, metrics)
+    build_ablation_latex_table(summary_rows, tex_path, metrics_to_use)
     print(f"\nLaTeX ablation table saved to: {tex_path}")
     print("Figures saved under:", ablation_config["base_outdir"])
 

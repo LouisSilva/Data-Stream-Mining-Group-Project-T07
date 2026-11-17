@@ -104,6 +104,7 @@ def main():
     }
 
     datasets = build_datasets(config, sota_config["datasets"])
+    
     models_to_compare = sota_config["models"]
     metrics_to_use = resolve_metrics_from_yaml_config(sota_config["metrics"])
 
