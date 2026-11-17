@@ -6,8 +6,8 @@ from typing import Any, Dict, List, Tuple
 import numpy as np
 from scipy import stats
 
-from src.utils.metrics import Metric
-from src.utils.evaluation import RuleStats
+from experiments.utils.metrics import Metric
+from experiments.utils.evaluation import RuleStats
 
 
 def _latex_escape(s: str) -> str:

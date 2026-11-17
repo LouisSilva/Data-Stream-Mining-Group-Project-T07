@@ -63,11 +63,11 @@ from typing import Any, Dict, List
 import numpy as np
 from tqdm.auto import tqdm
 
-from src.utils.datasets import load_stream_to_numpy, min_max_scale
-from src.utils.metrics import compute_metric_histories, Metric
-from src.utils.latex import build_sota_latex_table, build_stats_tables, export_rules_latex
-from src.utils.plotting import plot_all_models_metric, plot_all_models_rules
-from src.utils.evaluation import SafeEFSWrapper, prequential_nf_generic, prequential_efs
+from experiments.utils.datasets import load_stream_to_numpy, min_max_scale
+from experiments.utils.metrics import compute_metric_histories, Metric
+from experiments.utils.latex import build_sota_latex_table, build_stats_tables, export_rules_latex
+from experiments.utils.plotting import plot_all_models_metric, plot_all_models_rules
+from experiments.utils.evaluation import SafeEFSWrapper, prequential_nf_generic, prequential_efs
 from experiments.experiment_runner import ExperimentRunner
 
 

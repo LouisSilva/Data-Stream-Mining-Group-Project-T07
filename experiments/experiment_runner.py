@@ -6,9 +6,9 @@ from typing import Any
 
 import numpy as np
 
-from src.utils.config import load_yaml_config
-from src.utils.datasets import build_datasets
-from src.utils.metrics import resolve_metrics_from_yaml_config
+from experiments.utils.config import load_yaml_config
+from experiments.utils.datasets import build_datasets_from_yaml_config
+from experiments.utils.metrics import resolve_metrics_from_yaml_config
 
 class ExperimentRunner(ABC):
     def __init__(
@@ -28,7 +28,7 @@ class ExperimentRunner(ABC):
             if self._is_model_allowed(model_name)
         ]
 
-        self.datasets_to_compare = build_datasets(self.config, self.experiment_config["datasets"])
+        self.datasets_to_compare = build_datasets_from_yaml_config(self.config, self.experiment_config["datasets"])
         self.metrics_to_use = resolve_metrics_from_yaml_config(self.experiment_config["metrics"])
 
         self.drift_markers = {

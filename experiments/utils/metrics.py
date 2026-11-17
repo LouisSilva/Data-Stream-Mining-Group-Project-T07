@@ -48,7 +48,7 @@ def compute_metric_histories(
     metrics: List[Metric],
     n_classes: int,
     evaluated_start: int = 0,
-) -> Dict[str, np.ndarray]:
+) -> Dict[Metric, np.ndarray]:
     """Cumulative prequential scores; unscored warm-up entries are NaN."""
     n = len(y_true)
     if len(y_pred) != n or not (0 <= evaluated_start < n):

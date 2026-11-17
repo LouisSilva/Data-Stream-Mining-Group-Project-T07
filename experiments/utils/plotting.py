@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
 import numpy as np
 
-from src.utils.metrics import Metric
+from experiments.utils.metrics import Metric
 
 
 def _draw_drift_markers(ax, dataset_name: str, drift_markers: dict, alpha: float = 0.75) -> None:

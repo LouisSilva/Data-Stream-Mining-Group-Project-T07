@@ -62,23 +62,7 @@ def min_max_scale(X: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     return X_scaled, x_min, x_max
 
 
-def safe_instantiate_real_datasets(candidates: List[str]) -> Dict[str, Any]:
-    """Instantiate candidate River real datasets if available in this River version."""
-    out: Dict[str, Any] = {}
-    for cls_name in candidates:
-        cls = getattr(datasets, cls_name, None)
-        if cls is None:
-            continue
-        try:
-            ds = cls()
-        except Exception:
-            continue
-        key = f"{cls_name}_real"
-        out[key] = ds
-    return out
-
-
-def build_datasets(config: dict, dataset_names: list[str]) -> dict:
+def build_datasets_from_yaml_config(config: dict, dataset_names: list[str]) -> dict:
     def build_synth_dataset(dataset_config: dict):
         params = dataset_config.get("params", {}).copy()
 

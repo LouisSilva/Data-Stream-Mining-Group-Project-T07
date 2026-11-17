@@ -38,10 +38,10 @@ from pathlib import Path
 import numpy as np
 from tqdm.auto import tqdm
 
-from src.utils.datasets import load_stream_to_numpy, min_max_scale
-from src.utils.metrics import compute_metric_histories
-from src.utils.latex import build_ablation_latex_table
-from src.utils.plotting import plot_ablation_metric
+from experiments.utils.datasets import load_stream_to_numpy, min_max_scale
+from experiments.utils.metrics import compute_metric_histories
+from experiments.utils.latex import build_ablation_latex_table
+from experiments.utils.plotting import plot_ablation_metric
 from experiments.experiment_runner import ExperimentRunner
 
 
@@ -60,13 +60,13 @@ class AblationConfig:
 
 
 # TODO: Put this into the yaml config
-ABLATIONS: List[AblationConfig] = [
-    AblationConfig(name="FULL", agg_mode="FULL", force_no_w=False),
-    AblationConfig(name="FIXED_AND", agg_mode="FIXED_AND", force_no_w=False),
-    AblationConfig(name="FIXED_OR", agg_mode="FIXED_OR", force_no_w=False),
-    AblationConfig(name="FIXED_COMP", agg_mode="FIXED_COMP", force_no_w=False),
-    AblationConfig(name="NO_W", agg_mode="FULL", force_no_w=True),
-]
+ABLATIONS: dict[str, AblationConfig] = {
+    "FULL": AblationConfig(name="FULL", agg_mode="FULL", force_no_w=False),
+    "FIXED_AND": AblationConfig(name="FIXED_AND", agg_mode="FIXED_AND", force_no_w=False),
+    "FIXED_OR": AblationConfig(name="FIXED_OR", agg_mode="FIXED_OR", force_no_w=False),
+    "FIXED_COMP": AblationConfig(name="FIXED_COMP", agg_mode="FIXED_COMP", force_no_w=False),
+    "NO_W": AblationConfig(name="NO_W", agg_mode="FULL", force_no_w=True),
+}
 
 
 class AblationExperimentRunner(ExperimentRunner):
@@ -133,7 +133,7 @@ class AblationExperimentRunner(ExperimentRunner):
     def run(self) -> None:
         print(self)
         
-        ablations = [ab for ab in ABLATIONS if ab.name in self.experiment_config["ablations"]]
+        ablations = [ABLATIONS[name] for name in self.experiment_config["ablations"]]
         summary_rows: List[Dict[str, Any]] = []
         
         for dataset_name, dataset in self.datasets_to_compare.items():
