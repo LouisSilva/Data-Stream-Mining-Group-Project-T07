@@ -28,29 +28,18 @@ How to run
 ----------
 python -m experiments.exp_ablation
 """
-
-from __future__ import annotations
-
 import importlib
 import os
 import time
 from dataclasses import dataclass
-from typing import Dict, Any, Tuple, List, Callable
+from typing import Dict, Any, List, Callable
 from pathlib import Path
 
 import numpy as np
-
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-
 from tqdm.auto import tqdm
-from river import datasets
-from river.datasets import synth
 
-from src.utils.config import load_yaml_config
-from src.utils.datasets import load_stream_to_numpy, min_max_scale, safe_instantiate_real_datasets, build_datasets
-from src.utils.metrics import compute_metric_histories, Metric, resolve_metrics_from_yaml_config
+from src.utils.datasets import load_stream_to_numpy, min_max_scale
+from src.utils.metrics import compute_metric_histories
 from src.utils.latex import build_ablation_latex_table
 from src.utils.plotting import plot_ablation_metric
 from experiments.experiment_runner import ExperimentRunner
