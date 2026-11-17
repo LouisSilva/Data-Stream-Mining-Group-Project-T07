@@ -43,61 +43,24 @@ import numpy as np
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+
 from tqdm.auto import tqdm
+from river import datasets
+from river.datasets import synth
 
 from src.utils.config import load_yaml_config
-from src.utils.datasets import load_stream_to_numpy, min_max_scale, build_datasets
+from src.utils.datasets import load_stream_to_numpy, min_max_scale, safe_instantiate_real_datasets, build_datasets
 from src.utils.metrics import compute_metric_histories, Metric, resolve_metrics_from_yaml_config
 from src.utils.latex import build_ablation_latex_table
 from src.utils.plotting import plot_ablation_metric
+from experiments.experiment_runner import ExperimentRunner
 
 
 # ---------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------
 CONFIG_PATH = Path(__file__).resolve().parent / "experiment_config.yaml"
-
-
-# ---------------------------------------------------------------------
-# Ablation controls
-# ---------------------------------------------------------------------
-def make_fixed_aggregate(mode: str) -> Callable[[np.ndarray, float], float]:
-    """Return a unim_aggregate-like function (h, e) -> float."""
-    mode = mode.upper()
-
-    def full(h: np.ndarray, e: float = 0.5) -> float:
-        z = np.asarray(h, dtype=float)
-        if z.size == 0:
-            return float(e)
-        all_le = np.all(z <= e)
-        all_ge = np.all(z >= e)
-        if all_le and not all_ge:
-            return float(np.min(z))
-        if all_ge and not all_le:
-            return float(np.max(z))
-        return float(np.mean(z))
-
-    if mode == "FULL":
-        return full
-    if mode == "FIXED_AND":
-        return lambda h, e=0.5: (
-            float(np.min(np.asarray(h, dtype=float)))
-            if np.asarray(h).size
-            else float(e)
-        )
-    if mode == "FIXED_OR":
-        return lambda h, e=0.5: (
-            float(np.max(np.asarray(h, dtype=float)))
-            if np.asarray(h).size
-            else float(e)
-        )
-    if mode == "FIXED_COMP":
-        return lambda h, e=0.5: (
-            float(np.mean(np.asarray(h, dtype=float)))
-            if np.asarray(h).size
-            else float(e)
-        )
-    raise ValueError(f"Unknown aggregation mode: {mode}")
+#-----------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
@@ -107,6 +70,7 @@ class AblationConfig:
     force_no_w: bool
 
 
+# TODO: Put this into the yaml config
 ABLATIONS: List[AblationConfig] = [
     AblationConfig(name="FULL", agg_mode="FULL", force_no_w=False),
     AblationConfig(name="FIXED_AND", agg_mode="FIXED_AND", force_no_w=False),
@@ -116,158 +80,180 @@ ABLATIONS: List[AblationConfig] = [
 ]
 
 
-def apply_ablation_patches(ab: AblationConfig, model_cls):
-    module = importlib.import_module(model_cls.__module__)
-    original = module.unim_aggregate
-    module.unim_aggregate = make_fixed_aggregate(ab.agg_mode)
-    return module, original
+class AblationExperimentRunner(ExperimentRunner):
+    def __init__(self, config_path: Path | str = CONFIG_PATH) -> None:
+        super().__init__("ablation", config_path)
 
+    def _is_model_allowed(self, model_name: str) -> bool:
+        return self.config["models"][model_name]["kind"] == "nf"
 
-def enforce_no_w(model: Any):
-    if not hasattr(model, "rules"): return
-        
-    try:
-        for r in model.rules:
-            if hasattr(r, "w"): r.w = np.ones_like(r.w, dtype=float)
-    except Exception:
-        return
-
-
-# ---------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------
-def main():
-    config = load_yaml_config(CONFIG_PATH)
-    ablation_config = config["experiments"]["ablation"]
-    os.makedirs(ablation_config["base_outdir"], exist_ok=True)
-
-    drift_markers = {
-        name: dataset_config["drift_markers"]
-        for name, dataset_config in config["datasets"].items()
-        if "drift_markers" in dataset_config
-    }
-
-    datasets = build_datasets(config, ablation_config["datasets"])
-
-    models_to_compare = ablation_config["models"]
-    metrics_to_use = resolve_metrics_from_yaml_config(ablation_config["metrics"])
-    
-    model_classes = {}
-    for name in models_to_compare:
-        if config["models"][name]["kind"] != "nf":
-            raise ValueError(f"Ablation requires kind: nf, got {name}")
-        
-        module_name, class_name = config["models"][name]["import"].split(":", 1)
-        model_classes[name] = getattr(importlib.import_module(module_name), class_name)
-
-    print(f"Using config: {CONFIG_PATH}")
-    print(f"Selected models: {models_to_compare}")
-    print(f"Selected metrics: {metrics_to_use}")
-
-    ablations = [ab for ab in ABLATIONS if ab.name in ablation_config["ablations"]]
-
-    summary_rows: List[Dict[str, Any]] = []
-    for ds_name in ablation_config["datasets"]:
-        ds = datasets[ds_name]
-        print(f"\n=== DATASET: {ds_name} ===")
-
-        n_max = config["datasets"][ds_name]["lengths"][ablation_config["experiment_mode"]]
-
+    def __enforce_no_w(self, model: Any) -> None:
+        if not hasattr(model, "rules"): 
+            return
         try:
-            X_raw, y, _ = load_stream_to_numpy(ds, n_max=n_max)
-        except ValueError as e:
-            print(f"  [SKIP] {ds_name}: non-numeric feature encountered ({e}).")
-            continue
-        except Exception as e:
-            print(f"  [SKIP] {ds_name}: failed to load ({e}).")
-            continue
+            for r in model.rules:
+                if hasattr(r, "w"): 
+                    r.w = np.ones_like(r.w, dtype=float)
+        except Exception:
+            return
 
-        X, _, _ = min_max_scale(X_raw)
-        n_samples, n_features = X.shape
-        n_classes = int(len(np.unique(y)))
+    def __apply_ablation_patches(self, ablation: AblationConfig, model_cls):
+        module = importlib.import_module(model_cls.__module__)
+        original = module.unim_aggregate
+        module.unim_aggregate = self.__make_fixed_aggregate(ablation.agg_mode)
+        return module, original
 
-        outdir_ds = os.path.join(ablation_config["base_outdir"], ds_name)
-        os.makedirs(outdir_ds, exist_ok=True)
+    def __make_fixed_aggregate(self, mode: str) -> Callable[[np.ndarray, float], float]:
+        """Return a unim_aggregate-like function (h, e) -> float."""
+        mode = mode.upper()
+    
+        def full(h: np.ndarray, e: float = 0.5) -> float:
+            z = np.asarray(h, dtype=float)
+            if z.size == 0:
+                return float(e)
+            all_le = np.all(z <= e)
+            all_ge = np.all(z >= e)
+            if all_le and not all_ge:
+                return float(np.min(z))
+            if all_ge and not all_le:
+                return float(np.max(z))
+            return float(np.mean(z))
+    
+        if mode == "FULL":
+            return full
+        if mode == "FIXED_AND":
+            return lambda h, e=0.5: (
+                float(np.min(np.asarray(h, dtype=float)))
+                if np.asarray(h).size
+                else float(e)
+            )
+        if mode == "FIXED_OR":
+            return lambda h, e=0.5: (
+                float(np.max(np.asarray(h, dtype=float)))
+                if np.asarray(h).size
+                else float(e)
+            )
+        if mode == "FIXED_COMP":
+            return lambda h, e=0.5: (
+                float(np.mean(np.asarray(h, dtype=float)))
+                if np.asarray(h).size
+                else float(e)
+            )
+        raise ValueError(f"Unknown aggregation mode: {mode}")
 
-        curves_for_plot: Dict[Metric, Dict[str, np.ndarray]] = {metric: {} for metric in metrics_to_use}
+    def run(self) -> None:
+        print(self)
         
-        for model_name in model_classes:
-            model_cls = model_classes[model_name]
-            
-            for ab in ABLATIONS:
-                label = f"{model_name}-{ab.name}"
-                print(f"  -> {label}")
+        ablations = [ab for ab in ABLATIONS if ab.name in self.experiment_config["ablations"]]
+        summary_rows: List[Dict[str, Any]] = []
+        
+        for dataset_name, dataset in self.datasets_to_compare.items():
+            print(f"\n=== DATASET: {dataset_name} ===")
 
-                module, original_aggregate = apply_ablation_patches(ab, model_cls)
+            n_max = self.config["datasets"][dataset_name]["lengths"][self.experiment_config["experiment_mode"]]
+            try:
+                X_raw, y, _ = load_stream_to_numpy(dataset, n_max=n_max)
+            except ValueError as e:
+                print(f"  [SKIP] {dataset_name}: non-numeric feature encountered ({e}).")
+                continue
+            except Exception as e:
+                print(f"  [SKIP] {dataset_name}: failed to load ({e}).")
+                continue
 
-                # Instantiate using model parameters from YAML
-                model = model_cls(
-                    n_features=n_features, n_classes=n_classes,
-                    **config["models"][model_name].get("parameters", {})
-                )
+            X, _, _ = min_max_scale(X_raw)
+            n_samples, n_features = X.shape
+            n_classes = int(len(np.unique(y)))
 
-                # Custom prequential loop to allow NO_W enforcement without altering the main evaluator
-                n = len(y)
-                predictions = np.zeros(n, dtype=int)
-                correct = np.zeros(n, float)
-                acc = np.zeros(n, float)
+            dataset_outdir = os.path.join(self.experiment_config["base_outdir"], dataset_name)
+            os.makedirs(dataset_outdir, exist_ok=True)
+            results_for_dataset: Dict[str, Dict[str, Any]] = {}
 
-                t0 = time.perf_counter()
-                for t in tqdm(range(n), desc=f"{label} ({ds_name})", leave=False):
-                    x_t = X[t : t + 1]
-                    yt = int(y[t])
+            for model_name in self.models_to_compare:
+                model_cls = self.model_classes[model_name]
+                for ablation in ablations:
+                    label = f"{model_name}-{ablation.name}"
+                    print(f"  -> {label}")
 
-                    if t == 0:
-                        y_hat = 0
-                    else:
-                        try:
-                            yhat_raw = np.asarray(model.predict(x_t)).ravel()
-                            y_hat = int(yhat_raw[0]) if yhat_raw.size else 0
-                        except Exception:
-                            y_hat = 0
+                    module, original_aggregate = self.__apply_ablation_patches(ablation, model_cls)
 
-                    predictions[t] = y_hat
+                    try:
+                        model = self._create_nf_model(model_name, n_features, n_classes)
 
-                    model.partial_fit(x_t, np.array([yt]))
-                    if ab.force_no_w:
-                        enforce_no_w(model)
+                        # Custom prequential loop to allow NO_W enforcement without altering the main evaluator
+                        n = len(y)
+                        predictions = np.zeros(n, dtype=int)
 
-                exec_time = time.perf_counter() - t0
-                module.unim_aggregate = original_aggregate
+                        pred_fallbacks = 0
+                        t0 = time.perf_counter()
+                        for t in tqdm(range(n), desc=f"{label} ({dataset_name})", leave=False):
+                            x_t = X[t : t + 1]
+                            yt = int(y[t])
 
-                n_rules_final = len(getattr(model, "rules", []))
-                histories = compute_metric_histories(y, predictions, metrics_to_use, n_classes)
-                row = dict(
-                    mode=ablation_config["experiment_mode"], 
-                    dataset=ds_name,
-                    model=model_name, 
-                    ablation=ab.name, 
-                    N=n_samples,
-                    n_rules_final=int(n_rules_final), 
-                    time_s=float(exec_time),
-                )
+                            if t == 0:
+                                y_hat = 0
+                            else:
+                                try:
+                                    yhat_raw = np.asarray(model.predict(x_t)).ravel()
+                                    if yhat_raw.size == 0 or not np.isfinite(yhat_raw[0]):
+                                        raise FloatingPointError
+                                    y_hat = int(yhat_raw[0])
+                                except Exception:
+                                    y_hat = 0
+                                    pred_fallbacks += 1
 
+                            predictions[t] = y_hat
+
+                            model.partial_fit(x_t, np.array([yt]))
+                            if ablation.force_no_w:
+                                self.__enforce_no_w(model)
+
+                        exec_time = time.perf_counter() - t0
+                    finally:
+                        module.unim_aggregate = original_aggregate
+
+                    result = {
+                        "y_pred": predictions,
+                        "evaluated_start": 0,
+                        "metric_histories": compute_metric_histories(y, predictions, self.metrics_to_use, n_classes),
+                        "n_rules_final": len(getattr(model, "rules", [])),
+                        "time_s": exec_time,
+                        "N": n_samples,
+                        "pred_fallbacks": pred_fallbacks,
+                        "P_instabilities": int(getattr(model, "n_rls_resets", 0)),
+                    }
+                    
+                    results_for_dataset[label] = result
+                    summary_rows.append(
+                        self._make_summary_row(
+                            dataset_name, model_name, n_samples, result,
+                            mode=self.experiment_config["experiment_mode"], ablation=ablation.name,
+                        )
+                    )
+
+                    report = [
+                        f"{metric.label}_final={result['metric_histories'][metric][-1]:.4f}"
+                        for metric in self.metrics_to_use
+                    ]
+                    
+                    print(
+                        f"     [RESULT] {' | '.join(report)} | "
+                        f"Rules_final={result['n_rules_final']} | Time={exec_time:.1f}s"
+                    )
+
+            for metric in self.metrics_to_use:
+                curves = {
+                    label: result["metric_histories"][metric]
+                    for label, result in results_for_dataset.items()
+                }
                 
-                report = []
-                for metric in metrics_to_use:
-                    values = histories[metric]
-                    row[f"{metric.suffix}_final"] = float(values[-1])
-                    row[f"{metric.suffix}_mean"] = float(np.nanmean(values))
-                    curves_for_plot[metric][label] = values
-                    report.append(f"{metric.label}_final={values[-1]:.4f}")
+                if curves:
+                    plot_ablation_metric(self.config["plotting"], dataset_name, curves, dataset_outdir, metric, self.drift_markers)
+
+        tex_path = os.path.join(self.experiment_config["base_outdir"], "exp_ablation_summary.tex")
+        build_ablation_latex_table(summary_rows, tex_path, self.metrics_to_use)
+        print(f"\nLaTeX ablation table saved to: {tex_path}")
+        print("Figures saved under:", self.experiment_config["base_outdir"])
                 
-                summary_rows.append(row)
-                print(f"     [RESULT] {' | '.join(report)} | Rules_final={n_rules_final} | Time={exec_time:.1f}s")
-
-        for metric in metrics_to_use:
-            if curves_for_plot[metric]:
-                plot_ablation_metric(config["plotting"], ds_name, curves_for_plot[metric], outdir_ds, metric, drift_markers)
-
-    tex_path = os.path.join(ablation_config["base_outdir"], "exp_ablation_summary.tex")
-    build_ablation_latex_table(summary_rows, tex_path, metrics_to_use)
-    print(f"\nLaTeX ablation table saved to: {tex_path}")
-    print("Figures saved under:", ablation_config["base_outdir"])
-
 
 if __name__ == "__main__":
-    main()
+    AblationExperimentRunner().run()

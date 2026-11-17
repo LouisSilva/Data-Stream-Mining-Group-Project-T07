@@ -37,7 +37,7 @@ def _topk_indices_by_weight(w: np.ndarray, k: int = 5) -> List[int]:
     return list(np.argsort(-w)[:k])
 
 
-def build_sota_latex_table(summary, outpath: str, metrics: List[Metric]):
+def build_sota_latex_table(rows: List[Dict[str, Any]], outpath: str, metrics: List[Metric]):
     """Create columns only for the configured metrics."""
     metric_columns = []
     for metric in metrics:
@@ -59,11 +59,10 @@ def build_sota_latex_table(summary, outpath: str, metrics: List[Metric]):
         " & ".join(header_labels) + r" \\ \midrule",
     ]
 
-    for mode, dataset_name, model_name in sorted(summary.keys()):
-        row = summary[(mode, dataset_name, model_name)]
+    for row in sorted(rows, key=lambda row: (row["mode"], row["dataset"], row["model"])):
         entries = [
-            _latex_escape(mode), _latex_escape(dataset_name),
-            _latex_escape(model_name), str(int(row["N"])),
+            _latex_escape(row["mode"]), _latex_escape(row["dataset"]),
+            _latex_escape(row["model"]), str(int(row["N"])),
         ]
         
         entries += [f"{row[key]:.3f}" for _, key in metric_columns]
@@ -71,6 +70,7 @@ def build_sota_latex_table(summary, outpath: str, metrics: List[Metric]):
             str(int(row["n_rules_final"])), f"{row['time_s']:.1f}",
             str(int(row["pred_fallbacks"])), str(int(row["P_instabilities"])),
         ]
+        
         lines.append(" & ".join(entries) + r" \\")
 
     lines += [r"\bottomrule", r"\end{tabular}", r"\end{table}"]
