@@ -17,6 +17,7 @@ models:
       safe_threshold: 0.07
       min_firing_for_update: 0.05
       tau_merge: 0.62
+      n_min: 5
       drift_sensitivity: 0.35
       
   ENF_Unim_PA:

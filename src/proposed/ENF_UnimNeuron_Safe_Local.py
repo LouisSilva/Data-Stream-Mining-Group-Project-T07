@@ -68,7 +68,7 @@ class FeatureSeparabilityBuffer:
     weights per feature using a between/within-class variance ratio.
     """
 
-    def __init__(self, n_features: int, buffer_size: int = 200):
+    def __init__(self, n_features: int, buffer_size: int = 200) -> None:
         self.n_features = int(n_features)
         self.buffer_size = int(buffer_size)
         self.X: List[np.ndarray] = []
@@ -151,6 +151,7 @@ class EvolvingNeuroFuzzyUnimSafeLocal:
         n_classes: int,
         alpha_add: float = 0.3,
         tau_merge: float = 0.7,
+        n_min: int = 5,
         lambda_sim: float = 0.5,              # kept for API compatibility (not heavily used)
         buffer_size_similarity: int = 200,    # not used explicitly here
         buffer_size_separability: int = 200,
@@ -163,11 +164,12 @@ class EvolvingNeuroFuzzyUnimSafeLocal:
         min_support_for_merge: int = 10,
         random_state: Optional[int] = None,
         **kwargs,
-    ):
+    ) -> None:
         self.n_features = int(n_features)
         self.n_classes = int(n_classes)
         self.alpha_add = float(alpha_add)
         self.tau_merge = float(tau_merge)
+        self.n_min = int(n_min)
         self.lambda_sim = float(lambda_sim)
         self.max_rules = max_rules
         self.e = float(e)
@@ -201,7 +203,7 @@ class EvolvingNeuroFuzzyUnimSafeLocal:
     def n_rules_(self) -> int:
         return len(self.rules)
 
-    # batch API used in experiment 2
+    # Batch API used in experiment 2
     def partial_fit(self, X: np.ndarray, y: np.ndarray) -> None:
         X = np.asarray(X, dtype=float)
         y = np.asarray(y, dtype=int)
@@ -222,7 +224,7 @@ class EvolvingNeuroFuzzyUnimSafeLocal:
     def _update_one(self, x: np.ndarray, y: int) -> None:
         x = np.asarray(x, dtype=float).ravel()
 
-        # update global stats (ADPA-style)
+        # Update global stats (ADPA-style)
         if self.K == 0:
             self.global_mean = x.copy()
             self.global_X2 = float(np.sum(x**2))
@@ -244,17 +246,17 @@ class EvolvingNeuroFuzzyUnimSafeLocal:
             self.sep_buffer.add(x, y)
             return
 
-        # decide whether to create new rule or adapt nearest
+        # Decide whether to create new rule or adapt nearest
         centers = np.stack([r.center for r in self.rules], axis=0)
         dist_centers = np.max(np.abs(centers - self.global_mean), axis=1)
         dist_x = float(np.max(np.abs(x - self.global_mean)))
 
         if float(np.min(dist_centers)) > dist_x or float(np.max(dist_centers)) < dist_x:
-            # new region -> create rule
+            # New region -> create rule
             self._create_rule(x, y, sigma=SIGMAg)
             self._maybe_merge_last_rule()
         else:
-            # adapt nearest rule
+            # Adapt nearest rule
             cheb = np.max(np.abs(centers - x), axis=1)
             idx = int(np.argmin(cheb))
             V = float(cheb[idx])
@@ -267,8 +269,8 @@ class EvolvingNeuroFuzzyUnimSafeLocal:
                 r.support = new_support
 
                 # Estimate local dispersion
-                if r.support < 3:
-                    sigma_target = SIGMAg # Just use the global dispersion until we get > 3 observations. The 3 is a hyperparameter
+                if r.support < self.n_min:
+                    sigma_target = SIGMAg # Use global dispersion until we get > n_min observations
                 else:
                     local_scatter = max(r.local_X2 - float(np.sum(r.center**2)), 0)
                     sigma_target = np.sqrt(local_scatter / 2)
@@ -281,10 +283,10 @@ class EvolvingNeuroFuzzyUnimSafeLocal:
                 self._create_rule(x, y, sigma=SIGMAg)
                 self._maybe_merge_last_rule()
 
-        # safe local update of consequents
+        # Safe local update of consequents
         self._safe_update_consequents(x, y)
 
-        # update separability buffer and refresh feature weights from time to time
+        # Update separability buffer and refresh feature weights from time to time
         self.sep_buffer.add(x, y)
         if self.K % 50 == 0:
             self.current_feature_weights = self.sep_buffer.compute_feature_weights()
@@ -347,7 +349,7 @@ class EvolvingNeuroFuzzyUnimSafeLocal:
         w_old = r_old.support / float(total_support)
         w_new = r_new.support / float(total_support)
 
-        r.old.local_X2 = w_old * r_old.local_X2 + w_new * r_new.localX2
+        r_old.local_X2 = w_old * r_old.local_X2 + w_new * r_new.localX2
         r_old.center = w_old * r_old.center + w_new * r_new.center
         r_old.sigma = float(w_old * r_old.sigma + w_new * r_new.sigma)
         r_old.w = w_old * r_old.w + w_new * r_new.w
